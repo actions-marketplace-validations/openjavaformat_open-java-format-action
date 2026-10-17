@@ -70,6 +70,12 @@ Notes:
 
 ## Recommended setup
 
+Both setups check the files of a pull request and every file on a push to `main`. They differ in where a newer open-java-format release is announced.
+
+### With the version check in the job log
+
+No permissions beyond the defaults. When a newer release is out, the job log gets a warning.
+
 ```yaml
 on:
   pull_request:
@@ -88,18 +94,21 @@ jobs:
           mode: ${{ github.event_name == 'push' && 'all' || 'changed' }}
 ```
 
-## Code scanning
+### With the version check in code scanning too
 
-The action compares the `version` it runs with the latest [open-java-format release](https://github.com/openjavaformat/open-java-format/releases) and warns in the job log when a newer one is out. A log warning is easy to miss, so the check can also be reported to code scanning: the action then uploads a SARIF file with one alert while the version is behind, and with none once it is current, which closes the alert. The alert shows up under **Security → Code scanning** and in the **Code scanning results** check on pull requests, and points at the line of the workflow that names the version.
-
-This is off by default, because the upload needs the `security-events: write` permission, which the default token does not have. To turn it on, set `code-scanning: true` and give the job the permission:
+The same, plus a [code scanning alert](#code-scanning) that stays open until the version is updated. It takes `code-scanning: true` and the `security-events: write` permission; the `permissions` block replaces the job's default permissions, so it names everything else the job needs as well.
 
 ```yaml
+on:
+  pull_request:
+  push:
+    branches: [main]
+
 jobs:
   format:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: read # the checkout
       pull-requests: read # mode: changed reads the files of the pull request
       security-events: write # the code scanning upload
     steps:
@@ -108,10 +117,15 @@ jobs:
       - uses: openjavaformat/open-java-format-action@v2
         with:
           version: '2.98.0.6'
+          mode: ${{ github.event_name == 'push' && 'all' || 'changed' }}
           code-scanning: true
 ```
 
-The `permissions` block replaces the default permissions of the job, so it has to name everything else the job needs, such as `contents: read` for the checkout. If the permission is missing anyway, the upload is skipped with a line in the log, the check passes as before, and the log warning stays. Code scanning is free on public repositories; a private repository needs [GitHub Code Security](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-security-and-analysis-settings-for-your-repository) enabled. Pull requests from forks run with a read-only token and get the log warning only.
+## Code scanning
+
+The action compares the `version` it runs with the latest [open-java-format release](https://github.com/openjavaformat/open-java-format/releases) and warns in the job log when a newer one is out. A log warning is easy to miss, so the check can also be reported to code scanning: the action then uploads a SARIF file with one alert while the version is behind, and with none once it is current, which closes the alert. The alert shows up under **Security → Code scanning** and in the **Code scanning results** check on pull requests, and points at the line of the workflow that names the version.
+
+This is off by default, because the upload needs the `security-events: write` permission, which the default token does not have. To turn it on, set `code-scanning: true` and give the job the permission, as in the [second recommended setup](#with-the-version-check-in-code-scanning-too). If the permission is missing anyway, the upload is skipped with a line in the log, the check passes as before, and the log warning stays. Code scanning is free on public repositories; a private repository needs [GitHub Code Security](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-security-and-analysis-settings-for-your-repository) enabled. Pull requests from forks run with a read-only token and get the log warning only.
 
 One report per job is enough. When the job runs on a matrix, turn it on for one leg only:
 
