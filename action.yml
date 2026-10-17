@@ -15,6 +15,10 @@ inputs:
     description: 'Which files to check: "changed" for files from PR/push, "all" for every .java file'
     required: false
     default: 'changed'
+  code-scanning:
+    description: 'Report the version check to code scanning as well: "true" raises an alert under Security → Code scanning while a newer open-java-format is out, "false" keeps the check to the log warning. The upload needs the security-events: write permission and is skipped without it.'
+    required: false
+    default: 'true'
 
 runs:
   using: 'composite'
@@ -52,6 +56,7 @@ runs:
         echo "binary=$BINARY" >> "$GITHUB_OUTPUT"
 
     - name: Check for newer open-java-format version
+      id: latest
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
@@ -70,11 +75,149 @@ runs:
           https://api.github.com/repos/openjavaformat/open-java-format/releases/latest 2>/dev/null \
           | jq -r '.tag_name // empty' 2>/dev/null || true)
 
+        echo "version=$LATEST" >> "$GITHUB_OUTPUT"
         if [ -z "$LATEST" ]; then
           echo "Could not check the latest open-java-format version — skipping this check."
         elif [ "$LATEST" != "$VERSION" ]; then
           echo "::warning::A newer open-java-format version is available: $LATEST (you are using $VERSION)"
         fi
+
+    - name: Report the version check to code scanning
+      if: inputs.code-scanning == 'true' && steps.latest.outputs.version != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        VERSION: ${{ inputs.version }}
+        LATEST: ${{ steps.latest.outputs.version }}
+      run: |
+        # A log warning is easy to miss, so the check is also handed to code scanning: a SARIF
+        # file with one alert while a newer release is out, and with none once the version is
+        # current, which closes the alert. The alert sits on the line of this repository's
+        # workflow that names the version, so that it points at what to change. The upload goes
+        # straight to the REST API: github/codeql-action/upload-sarif fails the job when the
+        # permission is missing, and this must stay best-effort, like the check itself — nothing
+        # here may fail the build.
+        case "$GITHUB_REF" in
+          refs/heads/*|refs/tags/*|refs/pull/*) ;;
+          *) echo "Code scanning takes no results for ref '$GITHUB_REF' — not reporting the version check."; exit 0 ;;
+        esac
+
+        # owner/repo/.github/workflows/ci.yml@refs/heads/main -> .github/workflows/ci.yml
+        WORKFLOW="${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY/"}"
+        WORKFLOW="${WORKFLOW%@*}"
+
+        RESULTS='[]'
+        if [ "$LATEST" != "$VERSION" ]; then
+          # The first line naming the version: in the workflow that runs this job, then in any
+          # other workflow of the repository (a reusable one, say). Failing that, the line that
+          # uses the action, then the top of the workflow.
+          FILE=""
+          LINE=""
+          PATTERN="(^|[^0-9.])${VERSION//./\\.}([^0-9.]|$)"
+          while IFS= read -r CANDIDATE; do
+            [ -f "$CANDIDATE" ] || continue
+            HIT=$(grep -nE -m1 "$PATTERN" "$CANDIDATE" | cut -d: -f1 || true)
+            if [ -n "$HIT" ]; then
+              FILE="$CANDIDATE"
+              LINE="$HIT"
+              break
+            fi
+          done < <(printf '%s\n' "$WORKFLOW"; find .github/workflows -maxdepth 1 \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | sort)
+          if [ -z "$FILE" ] && [ -f "$WORKFLOW" ]; then
+            FILE="$WORKFLOW"
+            LINE=$(grep -nE -m1 'uses:.*open-java-format-action' "$FILE" | cut -d: -f1 || true)
+            LINE="${LINE:-1}"
+          fi
+          if [ -z "$FILE" ]; then
+            echo "No workflow file to put the alert on — not reporting the version check."
+            exit 0
+          fi
+
+          # Code scanning tells alerts apart by this fingerprint, not by the line number. It is
+          # made from the line's text without whitespace, so the alert survives the line moving.
+          TEXT=$(sed -n "${LINE}p" "$FILE" | tr -d '\r')
+          FINGERPRINT=$(printf '%s' "${TEXT//[[:space:]]/}" | git hash-object --stdin)
+          RESULTS=$(jq -n \
+            --arg text "open-java-format $LATEST is available; this workflow checks formatting with $VERSION." \
+            --arg file "$FILE" --argjson line "$LINE" --argjson end "$(( ${#TEXT} + 1 ))" \
+            --arg fingerprint "${FINGERPRINT:0:16}:1" \
+            '[{
+              ruleId: "outdated-version",
+              level: "warning",
+              message: {text: $text},
+              locations: [{physicalLocation: {
+                artifactLocation: {uri: $file},
+                region: {startLine: $line, startColumn: 1, endLine: $line, endColumn: $end}
+              }}],
+              partialFingerprints: {primaryLocationLineHash: $fingerprint}
+            }]')
+        fi
+
+        HELP="$RUNNER_TEMP/open-java-format-version-help.md"
+        cat > "$HELP" <<'HELP_END'
+        A newer [open-java-format release](https://github.com/openjavaformat/open-java-format/releases) is out than the one this workflow checks formatting with. Releases fix formatting bugs, so code that passes with the pinned version may be formatted differently by the newer one.
+
+        To update:
+
+        - set the `version` input of `openjavaformat/open-java-format-action` to the new release;
+        - if the repository uses the pre-commit hook, set `FORMATTER_VERSION` at the top of it to the same release.
+
+        The alert closes on its own once the workflow runs with the latest release.
+        HELP_END
+
+        # One category per workflow and job, so that uploads from different jobs do not replace
+        # one another: open-java-format-action/ci.yml/format/
+        CATEGORY="open-java-format-action/${WORKFLOW:+${WORKFLOW##*/}/}${GITHUB_JOB:-job}/"
+        SARIF=$(jq -n --rawfile help "$HELP" --arg category "$CATEGORY" --argjson results "$RESULTS" '{
+          "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+          version: "2.1.0",
+          runs: [{
+            tool: {driver: {
+              name: "open-java-format-action",
+              informationUri: "https://github.com/openjavaformat/open-java-format-action",
+              rules: [{
+                id: "outdated-version",
+                name: "OutdatedVersion",
+                shortDescription: {text: "A newer open-java-format release is available"},
+                fullDescription: {text: "The workflow checks formatting with an open-java-format version older than the latest release. Releases fix formatting bugs, so code that passes with the pinned version may be formatted differently by the newer one."},
+                help: {text: $help, markdown: $help},
+                defaultConfiguration: {level: "warning"},
+                properties: {tags: ["maintainability"], precision: "very-high", "problem.severity": "warning"}
+              }]
+            }},
+            automationDetails: {id: $category},
+            results: $results
+          }]
+        }')
+
+        RESPONSE="$RUNNER_TEMP/open-java-format-code-scanning-response.json"
+        STATUS=$(jq -n --arg sha "$GITHUB_SHA" --arg ref "$GITHUB_REF" \
+            --arg started "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg sarif "$(printf '%s' "$SARIF" | gzip -c | base64 | tr -d '\n')" \
+            '{commit_sha: $sha, ref: $ref, started_at: $started, tool_name: "open-java-format-action", sarif: $sarif}' \
+          | curl -sS -o "$RESPONSE" -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" --data-binary @- \
+              "${GITHUB_API_URL:-https://api.github.com}/repos/$GITHUB_REPOSITORY/code-scanning/sarifs" \
+          || true)
+        STATUS="${STATUS:-000}"
+        case "$STATUS" in
+          202)
+            if [ "$RESULTS" = "[]" ]; then
+              echo "Reported to code scanning: open-java-format $VERSION is the latest release."
+            else
+              echo "Reported to code scanning: an alert on $FILE:$LINE, open-java-format $LATEST is available."
+            fi
+            ;;
+          403|404)
+            # No permission, no GitHub Code Security on a private repository, or the read-only
+            # token of a pull request from a fork. The log warning above stays.
+            echo "Code scanning did not accept the version check (HTTP $STATUS: $(jq -r '.message // empty' "$RESPONSE" 2>/dev/null)). To get it as a code scanning alert, give the job the 'security-events: write' permission; a private repository also needs GitHub Code Security. Set the code-scanning input to 'false' to stop these uploads."
+            ;;
+          *)
+            echo "::warning::Could not report the version check to code scanning (HTTP $STATUS): $(cat "$RESPONSE" 2>/dev/null)"
+            ;;
+        esac
 
     - name: Cache open-java-format binary
       id: cache
