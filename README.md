@@ -22,7 +22,7 @@ v2 is for open-java-format 2.98.0.2 and later, which has a single style. A workf
 |-------|----------|---------|-------------|
 | `version` | yes | `2.98.0.6` | Version of the open-java-format native binary, one of those on [Maven Central](https://repo1.maven.org/maven2/dev/openjavaformat/open-java-format-native/) |
 | `mode` | no | `changed` | `changed` — only files from PR or push; `all` — every `.java` file in repo |
-| `code-scanning` | no | `true` | Report the version check to [code scanning](#code-scanning) as well; `false` keeps it to the log warning |
+| `code-scanning` | no | `false` | Also report the version check to [code scanning](#code-scanning); needs the `security-events: write` permission |
 
 ## How `mode: changed` works
 
@@ -34,7 +34,7 @@ v2 is for open-java-format 2.98.0.2 and later, which has a single style. A workf
 
 - If all files are formatted correctly → passes ✅
 - If any file has formatting issues → lists unformatted files and fails ❌
-- If a newer open-java-format release is out → warns in the job log, and raises a [code scanning alert](#code-scanning) when the job allows it
+- If a newer open-java-format release is out → warns in the job log, and raises a [code scanning alert](#code-scanning) when that is turned on
 
 Files are checked in the open-java-format style, the formatter's only style. When the check fails, fix locally with a native binary or the runnable jar from the [open-java-format releases](https://github.com/openjavaformat/open-java-format/releases):
 
@@ -90,9 +90,9 @@ jobs:
 
 ## Code scanning
 
-The action compares the `version` it runs with the latest [open-java-format release](https://github.com/openjavaformat/open-java-format/releases) and warns in the job log when a newer one is out. A log warning is easy to miss, so the check is also reported to code scanning: the action uploads a SARIF file with one alert while the version is behind, and with none once it is current, which closes the alert. The alert shows up under **Security → Code scanning** and in the **Code scanning results** check on pull requests, and points at the line of the workflow that names the version.
+The action compares the `version` it runs with the latest [open-java-format release](https://github.com/openjavaformat/open-java-format/releases) and warns in the job log when a newer one is out. A log warning is easy to miss, so the check can also be reported to code scanning: the action then uploads a SARIF file with one alert while the version is behind, and with none once it is current, which closes the alert. The alert shows up under **Security → Code scanning** and in the **Code scanning results** check on pull requests, and points at the line of the workflow that names the version.
 
-The upload needs the `security-events: write` permission, which a job gets like this:
+This is off by default, because the upload needs the `security-events: write` permission, which the default token does not have. To turn it on, set `code-scanning: true` and give the job the permission:
 
 ```yaml
 jobs:
@@ -101,18 +101,19 @@ jobs:
     permissions:
       contents: read
       pull-requests: read # mode: changed reads the files of the pull request
-      security-events: write # the action reports its version check to code scanning
+      security-events: write # the code scanning upload
     steps:
       - uses: actions/checkout@v7
 
       - uses: openjavaformat/open-java-format-action@v2
         with:
           version: '2.98.0.6'
+          code-scanning: true
 ```
 
-Without the permission the upload is skipped with a line in the log, the check passes as before, and the log warning stays. Code scanning is free on public repositories; a private repository needs [GitHub Code Security](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-security-and-analysis-settings-for-your-repository) enabled. Pull requests from forks run with a read-only token and get the log warning only. To stop the upload altogether, set `code-scanning: false`.
+The `permissions` block replaces the default permissions of the job, so it has to name everything else the job needs, such as `contents: read` for the checkout. If the permission is missing anyway, the upload is skipped with a line in the log, the check passes as before, and the log warning stays. Code scanning is free on public repositories; a private repository needs [GitHub Code Security](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-security-and-analysis-settings-for-your-repository) enabled. Pull requests from forks run with a read-only token and get the log warning only.
 
-One report per job is enough. When the job runs on a matrix, enable it on one leg only:
+One report per job is enough. When the job runs on a matrix, turn it on for one leg only:
 
 ```yaml
         with:

@@ -16,9 +16,9 @@ inputs:
     required: false
     default: 'changed'
   code-scanning:
-    description: 'Report the version check to code scanning as well: "true" raises an alert under Security → Code scanning while a newer open-java-format is out, "false" keeps the check to the log warning. The upload needs the security-events: write permission and is skipped without it.'
+    description: 'Also report the version check to code scanning: "true" raises an alert under Security → Code scanning while a newer open-java-format is out. Off by default, because the upload needs the security-events: write permission; without it the upload is skipped.'
     required: false
-    default: 'true'
+    default: 'false'
 
 runs:
   using: 'composite'

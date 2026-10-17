@@ -10,10 +10,6 @@ jobs:
   format-check:
     name: Check Java formatting
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read # mode: changed reads the files of the pull request
-      security-events: write # the action reports its version check to code scanning
 
     steps:
       - uses: actions/checkout@v7

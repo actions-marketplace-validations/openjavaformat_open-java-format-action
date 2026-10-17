@@ -15,7 +15,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read # gh pr diff
-      security-events: write # the action reports its version check to code scanning
+      security-events: write # the code scanning upload
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -23,6 +23,7 @@ jobs:
       - uses: ./
         with:
           mode: changed
+          code-scanning: true # with the permission: the upload has to go through
 
   # The action and the hook on every platform they support, with a file that is formatted and one that
   # is not. The repository itself has no Java files, so the tests write their own.
@@ -30,7 +31,7 @@ jobs:
     name: Test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     permissions:
-      contents: read # no security-events: the action has to do without the code scanning upload
+      contents: read # no security-events: the code scanning upload has to be skipped, not fail the check
     strategy:
       fail-fast: false
       matrix:
@@ -48,6 +49,7 @@ jobs:
         uses: ./
         with:
           mode: all
+          code-scanning: true # without the permission, see above
 
       - name: Write a file that is not formatted
         run: printf 'class Unformatted{int x;}\n' > Unformatted.java
