@@ -9,12 +9,12 @@ No Java, Maven, or Gradle required — downloads a native binary from Maven Cent
 ```yaml
 - uses: actions/checkout@v7
 
-- uses: openjavaformat/open-java-format-action@v2
+- uses: openjavaformat/open-java-format-action@v3
   with:
     version: '2.98.0.6'
 ```
 
-v2 is for open-java-format 2.98.0.2 and later, which has a single style. A workflow that pins 2.98.0.1 stays on `@v1`, which passes that version the `--ojf` flag it needs.
+v3 is for open-java-format 2.98.0.2 and later, which has a single style; it differs from v2 by the optional [code scanning report](#code-scanning). A workflow that pins 2.98.0.1 stays on `@v1`, which passes that version the `--ojf` flag it needs.
 
 ## Inputs
 
@@ -88,7 +88,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: openjavaformat/open-java-format-action@v2
+      - uses: openjavaformat/open-java-format-action@v3
         with:
           version: '2.98.0.6'
           mode: ${{ github.event_name == 'push' && 'all' || 'changed' }}
@@ -114,7 +114,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: openjavaformat/open-java-format-action@v2
+      - uses: openjavaformat/open-java-format-action@v3
         with:
           version: '2.98.0.6'
           mode: ${{ github.event_name == 'push' && 'all' || 'changed' }}
