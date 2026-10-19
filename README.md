@@ -6,21 +6,26 @@ No Java, Maven, or Gradle required — downloads a native binary from Maven Cent
 
 ## Usage
 
+The version of open-java-format to check with goes in `.open-java-format-version` at the repository root, one of the versions on [Maven Central](https://repo1.maven.org/maven2/dev/openjavaformat/open-java-format-native/):
+
+```
+2.98.0.6
+```
+
+The action and the [pre-commit hook](#git-pre-commit-hook) both read that file, so the two cannot drift apart; without it, both stop and ask for it. The action itself needs no inputs:
+
 ```yaml
 - uses: actions/checkout@v7
 
-- uses: openjavaformat/open-java-format-action@v3
-  with:
-    version: '2.98.0.6'
+- uses: openjavaformat/open-java-format-action@v4
 ```
 
-v3 is for open-java-format 2.98.0.2 and later, which has a single style; it differs from v2 by the optional [code scanning report](#code-scanning). A workflow that pins 2.98.0.1 stays on `@v1`, which passes that version the `--ojf` flag it needs.
+v4 is for open-java-format 2.98.0.2 and later, which has a single style. v3 and v2 are for the same versions but take the version as a `version` input instead of the file. A workflow that pins 2.98.0.1 stays on `@v1`, which passes that version the `--ojf` flag it needs.
 
 ## Inputs
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `version` | yes | `2.98.0.6` | Version of the open-java-format native binary, one of those on [Maven Central](https://repo1.maven.org/maven2/dev/openjavaformat/open-java-format-native/) |
 | `mode` | no | `changed` | `changed` — only files from PR or push; `all` — every `.java` file in repo |
 | `code-scanning` | no | `false` | Also report the version check to [code scanning](#code-scanning); needs the `security-events: write` permission |
 
@@ -32,6 +37,7 @@ v3 is for open-java-format 2.98.0.2 and later, which has a single style; it diff
 
 ## Behaviour
 
+- If `.open-java-format-version` is missing → stops and asks for the file ❌
 - If all files are formatted correctly → passes ✅
 - If any file has formatting issues → lists unformatted files and fails ❌
 - If a newer open-java-format release is out → warns in the job log, and raises a [code scanning alert](#code-scanning) when that is turned on
@@ -70,7 +76,7 @@ Notes:
 
 ## Recommended setup
 
-Both setups check the files of a pull request and every file on a push to `main`. They differ in where a newer open-java-format release is announced.
+Both setups check the files of a pull request and every file on a push to `main`, with the version from `.open-java-format-version`. They differ in where a newer open-java-format release is announced.
 
 ### With the version check in the job log
 
@@ -88,9 +94,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: openjavaformat/open-java-format-action@v3
+      - uses: openjavaformat/open-java-format-action@v4
         with:
-          version: '2.98.0.6'
           mode: ${{ github.event_name == 'push' && 'all' || 'changed' }}
 ```
 
@@ -114,16 +119,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: openjavaformat/open-java-format-action@v3
+      - uses: openjavaformat/open-java-format-action@v4
         with:
-          version: '2.98.0.6'
           mode: ${{ github.event_name == 'push' && 'all' || 'changed' }}
           code-scanning: true
 ```
 
 ## Code scanning
 
-The action compares the `version` it runs with the latest [open-java-format release](https://github.com/openjavaformat/open-java-format/releases) and warns in the job log when a newer one is out. A log warning is easy to miss, so the check can also be reported to code scanning: the action then uploads a SARIF file with one alert while the version is behind, and with none once it is current, which closes the alert. The alert shows up under **Security → Code scanning** and in the **Code scanning results** check on pull requests, and points at the line of the workflow that names the version.
+The action compares the version in `.open-java-format-version` with the latest [open-java-format release](https://github.com/openjavaformat/open-java-format/releases) and warns in the job log when a newer one is out. A log warning is easy to miss, so the check can also be reported to code scanning: the action then uploads a SARIF file with one alert while the version is behind, and with none once it is current, which closes the alert. The alert shows up under **Security → Code scanning** and in the **Code scanning results** check on pull requests, and points at `.open-java-format-version`.
 
 This is off by default, because the upload needs the `security-events: write` permission, which the default token does not have. To turn it on, set `code-scanning: true` and give the job the permission, as in the [second recommended setup](#with-the-version-check-in-code-scanning-too). If the permission is missing anyway, the upload is skipped with a line in the log, the check passes as before, and the log warning stays. Code scanning is free on public repositories; a private repository needs [GitHub Code Security](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-security-and-analysis-settings-for-your-repository) enabled. Pull requests from forks run with a read-only token and get the log warning only.
 
@@ -131,7 +135,6 @@ One report per job is enough. When the job runs on a matrix, turn it on for one 
 
 ```yaml
         with:
-          version: '2.98.0.6'
           code-scanning: ${{ matrix.os == 'ubuntu-latest' }}
 ```
 
@@ -148,9 +151,7 @@ cp pre-commit .githooks/pre-commit
 git config core.hooksPath .githooks
 ```
 
-The hook automatically downloads the native binary on first run and caches it in `~/.cache/open-java-format`, then checks only staged `.java` files on each commit. It also honours the same [`.open-java-format-exclude`](#excluding-files) file as the action.
-
-The hook pins its own formatter version in `FORMATTER_VERSION` at the top of the script — keep it in step with the `version` your workflow passes to the action.
+The hook reads the version from the same [`.open-java-format-version`](#usage) file as the action and honours the same [`.open-java-format-exclude`](#excluding-files) file. It downloads the native binary on first run and caches it in `~/.cache/open-java-format`, then checks only staged `.java` files on each commit.
 
 ## Supported platforms
 

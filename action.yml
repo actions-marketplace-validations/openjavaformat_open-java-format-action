@@ -7,10 +7,6 @@ branding:
   color: 'green'
 
 inputs:
-  version:
-    description: 'Version of open-java-format to use'
-    required: true
-    default: '2.98.0.6'
   mode:
     description: 'Which files to check: "changed" for files from PR/push, "all" for every .java file'
     required: false
@@ -23,6 +19,25 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    - name: Read the open-java-format version
+      id: version
+      shell: bash
+      run: |
+        # The version to check with comes from .open-java-format-version in the repository root,
+        # the file the pre-commit hook reads too, so that the two cannot drift apart.
+        FILE=".open-java-format-version"
+        if [ ! -f "$FILE" ]; then
+          echo "::error::No $FILE in the repository root. Put the open-java-format version to check with in it, one of the releases at https://github.com/openjavaformat/open-java-format/releases, for example: echo 2.98.0.6 > $FILE"
+          exit 1
+        fi
+        VERSION=$(head -n1 "$FILE" | tr -d '[:space:]')
+        if ! [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
+          echo "::error file=$FILE,line=1::$FILE holds '$VERSION', not an open-java-format version such as 2.98.0.6."
+          exit 1
+        fi
+        echo "Checking with open-java-format $VERSION, from $FILE."
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
     - name: Detect platform
       id: platform
       shell: bash
@@ -61,7 +76,7 @@ runs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        VERSION="${{ inputs.version }}"
+        VERSION="${{ steps.version.outputs.version }}"
 
         # Best-effort version check — must never fail the build. The GitHub API
         # returns 403 for unauthenticated CI requests (rate limit), so authenticate
@@ -79,7 +94,7 @@ runs:
         if [ -z "$LATEST" ]; then
           echo "Could not check the latest open-java-format version — skipping this check."
         elif [ "$LATEST" != "$VERSION" ]; then
-          echo "::warning::A newer open-java-format version is available: $LATEST (you are using $VERSION)"
+          echo "::warning file=.open-java-format-version,line=1::A newer open-java-format version is available: $LATEST (.open-java-format-version has $VERSION)"
         fi
 
     - name: Report the version check to code scanning
@@ -87,16 +102,15 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        VERSION: ${{ inputs.version }}
+        VERSION: ${{ steps.version.outputs.version }}
         LATEST: ${{ steps.latest.outputs.version }}
       run: |
         # A log warning is easy to miss, so the check is also handed to code scanning: a SARIF
         # file with one alert while a newer release is out, and with none once the version is
-        # current, which closes the alert. The alert sits on the line of this repository's
-        # workflow that names the version, so that it points at what to change. The upload goes
-        # straight to the REST API: github/codeql-action/upload-sarif fails the job when the
-        # permission is missing, and this must stay best-effort, like the check itself — nothing
-        # here may fail the build.
+        # current, which closes the alert. The alert sits on .open-java-format-version, the file
+        # to change. The upload goes straight to the REST API: github/codeql-action/upload-sarif
+        # fails the job when the permission is missing, and this must stay best-effort, like the
+        # check itself — nothing here may fail the build.
         case "$GITHUB_REF" in
           refs/heads/*|refs/tags/*|refs/pull/*) ;;
           *) echo "Code scanning takes no results for ref '$GITHUB_REF' — not reporting the version check."; exit 0 ;;
@@ -108,37 +122,13 @@ runs:
 
         RESULTS='[]'
         if [ "$LATEST" != "$VERSION" ]; then
-          # The first line naming the version: in the workflow that runs this job, then in any
-          # other workflow of the repository (a reusable one, say). Failing that, the line that
-          # uses the action, then the top of the workflow.
-          FILE=""
-          LINE=""
-          PATTERN="(^|[^0-9.])${VERSION//./\\.}([^0-9.]|$)"
-          while IFS= read -r CANDIDATE; do
-            [ -f "$CANDIDATE" ] || continue
-            HIT=$(grep -nE -m1 "$PATTERN" "$CANDIDATE" | cut -d: -f1 || true)
-            if [ -n "$HIT" ]; then
-              FILE="$CANDIDATE"
-              LINE="$HIT"
-              break
-            fi
-          done < <(printf '%s\n' "$WORKFLOW"; find .github/workflows -maxdepth 1 \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | sort)
-          if [ -z "$FILE" ] && [ -f "$WORKFLOW" ]; then
-            FILE="$WORKFLOW"
-            LINE=$(grep -nE -m1 'uses:.*open-java-format-action' "$FILE" | cut -d: -f1 || true)
-            LINE="${LINE:-1}"
-          fi
-          if [ -z "$FILE" ]; then
-            echo "No workflow file to put the alert on — not reporting the version check."
-            exit 0
-          fi
-
-          # Code scanning tells alerts apart by this fingerprint, not by the line number. It is
-          # made from the line's text without whitespace, so the alert survives the line moving.
-          TEXT=$(sed -n "${LINE}p" "$FILE" | tr -d '\r')
+          FILE=".open-java-format-version"
+          LINE=1
+          # Code scanning tells alerts apart by this fingerprint, made from the line's text.
+          TEXT=$(head -n1 "$FILE" | tr -d '\r')
           FINGERPRINT=$(printf '%s' "${TEXT//[[:space:]]/}" | git hash-object --stdin)
           RESULTS=$(jq -n \
-            --arg text "open-java-format $LATEST is available; this workflow checks formatting with $VERSION." \
+            --arg text "open-java-format $LATEST is available; $FILE has $VERSION." \
             --arg file "$FILE" --argjson line "$LINE" --argjson end "$(( ${#TEXT} + 1 ))" \
             --arg fingerprint "${FINGERPRINT:0:16}:1" \
             '[{
@@ -155,14 +145,9 @@ runs:
 
         HELP="$RUNNER_TEMP/open-java-format-version-help.md"
         cat > "$HELP" <<'HELP_END'
-        A newer [open-java-format release](https://github.com/openjavaformat/open-java-format/releases) is out than the one this workflow checks formatting with. Releases fix formatting bugs, so code that passes with the pinned version may be formatted differently by the newer one.
+        A newer [open-java-format release](https://github.com/openjavaformat/open-java-format/releases) is out than the one named in `.open-java-format-version`. Releases fix formatting bugs, so code that passes with the pinned version may be formatted differently by the newer one.
 
-        To update:
-
-        - set the `version` input of `openjavaformat/open-java-format-action` to the new release;
-        - if the repository uses the pre-commit hook, set `FORMATTER_VERSION` at the top of it to the same release.
-
-        The alert closes on its own once the workflow runs with the latest release.
+        To update, put the new release in `.open-java-format-version` at the repository root. The action and the pre-commit hook both read that file. The alert closes on its own once the workflow runs with the latest release.
         HELP_END
 
         # One category per workflow and job, so that uploads from different jobs do not replace
@@ -179,7 +164,7 @@ runs:
                 id: "outdated-version",
                 name: "OutdatedVersion",
                 shortDescription: {text: "A newer open-java-format release is available"},
-                fullDescription: {text: "The workflow checks formatting with an open-java-format version older than the latest release. Releases fix formatting bugs, so code that passes with the pinned version may be formatted differently by the newer one."},
+                fullDescription: {text: ".open-java-format-version names an open-java-format version older than the latest release. Releases fix formatting bugs, so code that passes with the pinned version may be formatted differently by the newer one."},
                 help: {text: $help, markdown: $help},
                 defaultConfiguration: {level: "warning"},
                 properties: {tags: ["maintainability"], precision: "very-high", "problem.severity": "warning"}
@@ -224,13 +209,13 @@ runs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ github.action_path }}/${{ steps.platform.outputs.binary }}
-        key: open-java-format-${{ inputs.version }}-${{ steps.platform.outputs.suffix }}
+        key: open-java-format-${{ steps.version.outputs.version }}-${{ steps.platform.outputs.suffix }}
 
     - name: Download open-java-format native binary
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        VERSION="${{ inputs.version }}"
+        VERSION="${{ steps.version.outputs.version }}"
         SUFFIX="${{ steps.platform.outputs.suffix }}"
         BASE_URL="https://repo1.maven.org/maven2/dev/openjavaformat/open-java-format-native/${VERSION}"
         ARTIFACT="open-java-format-native-${VERSION}-nativeImage-${SUFFIX}.${{ steps.platform.outputs.extension }}"
