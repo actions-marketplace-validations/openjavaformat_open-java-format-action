@@ -3,26 +3,100 @@ name: Test Action
 on:
   push:
   pull_request:
+  workflow_dispatch: # Follow open-java-format releases runs this on the bump it pushes
 
+# No version anywhere here: the action and the hook read .open-java-format-version from the checkout,
+# the file that Follow open-java-format releases bumps. That workflow pushes with its own token, which
+# may not change a workflow file, so the version must not be written in this one.
 jobs:
   test-changed:
     name: Test mode=changed
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # gh pr diff
+      security-events: write # the code scanning upload
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - uses: ./
         with:
-          version: '2.98.0.1'
           mode: changed
+          code-scanning: true # with the permission: the upload has to go through
 
-  test-all:
-    name: Test mode=all
-    runs-on: ubuntu-latest
+  # The action and the hook on every platform they support: with a file that is formatted, with one
+  # that is not, and without .open-java-format-version. The repository itself has no Java files, so
+  # the tests write their own.
+  test-platforms:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read # no security-events: the code scanning upload has to be skipped, not fail the check
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel, windows-latest]
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v7
-      - uses: ./
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Write a formatted file
+        run: printf 'class Formatted {\n    int x;\n}\n' > Formatted.java
+
+      - name: Check it
+        uses: ./
         with:
-          version: '2.98.0.1'
           mode: all
+          code-scanning: true # without the permission, see above
+
+      - name: Write a file that is not formatted
+        run: printf 'class Unformatted{int x;}\n' > Unformatted.java
+
+      - name: Check it, expecting a failure
+        id: unformatted
+        continue-on-error: true
+        uses: ./
+        with:
+          mode: all
+
+      - name: Make sure the check failed
+        run: test "${{ steps.unformatted.outcome }}" = failure
+
+      - name: Take .open-java-format-version away, leaving only the formatted file
+        run: |
+          rm Unformatted.java
+          mv .open-java-format-version version.away
+
+      - name: Check without the version file, expecting a failure
+        id: no-version
+        continue-on-error: true
+        uses: ./
+        with:
+          mode: all
+
+      - name: Make sure that failed, and put the file back
+        run: |
+          test "${{ steps.no-version.outcome }}" = failure
+          mv version.away .open-java-format-version
+
+      - name: Run the pre-commit hook without the version file, then on a file that is not formatted, then on a formatted one
+        run: |
+          git init -q hook-test
+          cd hook-test
+          printf 'class Hook{int x;}\n' > Hook.java
+          git add Hook.java
+          if bash ../pre-commit; then
+            echo "::error::The hook ran without .open-java-format-version"
+            exit 1
+          fi
+          cp ../.open-java-format-version .
+          if bash ../pre-commit; then
+            echo "::error::The hook accepted a file that is not formatted"
+            exit 1
+          fi
+          printf 'class Hook {\n    int x;\n}\n' > Hook.java
+          git add Hook.java
+          bash ../pre-commit
